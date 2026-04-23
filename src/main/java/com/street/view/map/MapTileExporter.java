@@ -42,13 +42,19 @@ public final class MapTileExporter {
         Path tileDir = snapshotDir.resolve("tiles").resolve(dimensionFolder).resolve("z0");
         Files.createDirectories(tileDir);
 
-        ChunkPos spawnChunk = new ChunkPos(centerBlockX, centerBlockZ);
+        int centerChunkX = Math.floorDiv(centerBlockX, BLOCKS_PER_CHUNK);
+        int centerChunkZ = Math.floorDiv(centerBlockZ, BLOCKS_PER_CHUNK);
+        ChunkPos spawnChunk = new ChunkPos(centerChunkX, centerChunkZ);
         int exportedTiles = 0;
 
         for (int chunkX = spawnChunk.x() - radiusChunks; chunkX <= spawnChunk.x() + radiusChunks; chunkX++) {
             for (int chunkZ = spawnChunk.z() - radiusChunks; chunkZ <= spawnChunk.z() + radiusChunks; chunkZ++) {
                 BufferedImage tile = renderChunkTile(world, chunkX, chunkZ, blockPixelSize);
-                String tileName = "tile_" + chunkX + "_" + chunkZ + ".png";
+                int centerX = (chunkX * BLOCKS_PER_CHUNK) + (BLOCKS_PER_CHUNK / 2);
+                int centerZ = (chunkZ * BLOCKS_PER_CHUNK) + (BLOCKS_PER_CHUNK / 2);
+                int centerYExclusive = world.getHeight(Heightmap.Types.WORLD_SURFACE, centerX, centerZ);
+                int centerY = Math.max(world.getMinY(), centerYExclusive - 1);
+                String tileName = "tile_center_" + centerX + "_" + centerY + "_" + centerZ + ".png";
                 ImageIO.write(tile, "png", tileDir.resolve(tileName).toFile());
                 exportedTiles++;
             }
@@ -70,8 +76,12 @@ public final class MapTileExporter {
     }
 
     private static BufferedImage renderChunkTile(ServerLevel world, int chunkX, int chunkZ, int blockPixelSize) {
+        // Ensure chunk data (including heightmaps) is present before sampling.
+        world.getChunk(chunkX, chunkZ);
+
         int tileSizePixels = BLOCKS_PER_CHUNK * blockPixelSize;
         BufferedImage image = new BufferedImage(tileSizePixels, tileSizePixels, BufferedImage.TYPE_INT_ARGB);
+        int minBuildHeight = world.getMinY();
 
         for (int localX = 0; localX < BLOCKS_PER_CHUNK; localX++) {
             for (int localZ = 0; localZ < BLOCKS_PER_CHUNK; localZ++) {
@@ -79,7 +89,7 @@ public final class MapTileExporter {
                 int worldZ = (chunkZ * BLOCKS_PER_CHUNK) + localZ;
 
                 int topYExclusive = world.getHeight(Heightmap.Types.WORLD_SURFACE, worldX, worldZ);
-                int blockY = topYExclusive - 1;
+                int blockY = Math.max(minBuildHeight, topYExclusive - 1);
 
                 BlockState topState = world.getBlockState(new BlockPos(worldX, blockY, worldZ));
                 Color baseColor = BlockColorPalette.colorFor(topState);

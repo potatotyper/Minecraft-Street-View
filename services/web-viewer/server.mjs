@@ -1,3 +1,6 @@
+// Load environment variables from .env file
+import dotenv from "dotenv";
+dotenv.config();
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import http from "node:http";
@@ -13,6 +16,8 @@ const port = Number(process.env.PORT || 4173);
 const configuredOutput = process.env.MAP_OUTPUT_DIR
   ? path.resolve(process.env.MAP_OUTPUT_DIR)
   : null;
+
+console.log("MAP IS", configuredOutput);
 
 const fallbackRoots = [
   configuredOutput,
@@ -107,26 +112,50 @@ async function getTilesForDimension(snapshotId, dimension) {
   }
 
   const entries = await fsp.readdir(tileDir, { withFileTypes: true });
-  const tiles = [];
+  const tilesByChunk = new Map();
+
+  function maybeSetTile(tile, priority) {
+    const key = `${tile.x},${tile.z}`;
+    const existing = tilesByChunk.get(key);
+    if (!existing || priority > existing.priority || (priority === existing.priority && tile.fileName < existing.tile.fileName)) {
+      tilesByChunk.set(key, { tile, priority });
+    }
+  }
 
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".png")) {
       continue;
     }
 
-    const match = /^tile_(-?\d+)_(-?\d+)\.png$/.exec(entry.name);
-    if (!match) {
+    const centerMatch = /^tile_center_(-?\d+)_(-?\d+)_(-?\d+)\.png$/.exec(entry.name);
+    if (centerMatch) {
+      const centerX = Number(centerMatch[1]);
+      const centerY = Number(centerMatch[2]);
+      const centerZ = Number(centerMatch[3]);
+      maybeSetTile({
+        x: Math.trunc((centerX - 8) / 16),
+        z: Math.trunc((centerZ - 8) / 16),
+        centerX,
+        centerY,
+        centerZ,
+        fileName: entry.name
+      }, 2);
       continue;
     }
 
-    tiles.push({
-      x: Number(match[1]),
-      z: Number(match[2]),
-      fileName: entry.name
-    });
+    const legacyMatch = /^tile_(-?\d+)_(-?\d+)\.png$/.exec(entry.name);
+    if (legacyMatch) {
+      maybeSetTile({
+        x: Number(legacyMatch[1]),
+        z: Number(legacyMatch[2]),
+        fileName: entry.name
+      }, 1);
+    }
   }
 
-  return tiles;
+  return Array.from(tilesByChunk.values())
+    .map((entry) => entry.tile)
+    .sort((a, b) => (a.z - b.z) || (a.x - b.x));
 }
 
 async function handleApi(request, response, url) {
@@ -187,6 +216,7 @@ async function handleApi(request, response, url) {
   if (url.pathname === "/api/tile") {
     const snapshotId = url.searchParams.get("snapshot") || "";
     const dimension = url.searchParams.get("dimension") || "";
+    const fileName = url.searchParams.get("file") || "";
     const x = url.searchParams.get("x") || "";
     const z = url.searchParams.get("z") || "";
 
@@ -195,13 +225,19 @@ async function handleApi(request, response, url) {
       return;
     }
 
-    if (!/^-?\d+$/.test(x) || !/^-?\d+$/.test(z)) {
-      sendJson(response, 400, { error: "Invalid tile coordinates." });
-      return;
-    }
-
     const root = getMapOutputRoot();
-    const filePath = path.join(root, snapshotId, "tiles", dimension, "z0", `tile_${x}_${z}.png`);
+    const tileDir = path.join(root, snapshotId, "tiles", dimension, "z0");
+    let filePath = "";
+
+    if (fileName && /^tile_[A-Za-z0-9._-]+\.png$/.test(fileName)) {
+      filePath = path.join(tileDir, fileName);
+    } else {
+      if (!/^-?\d+$/.test(x) || !/^-?\d+$/.test(z)) {
+        sendJson(response, 400, { error: "Invalid tile coordinates." });
+        return;
+      }
+      filePath = path.join(tileDir, `tile_${x}_${z}.png`);
+    }
 
     if (!fs.existsSync(filePath)) {
       sendJson(response, 404, { error: "Tile not found." });

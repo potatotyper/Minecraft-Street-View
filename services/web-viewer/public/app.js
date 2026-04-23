@@ -1,11 +1,13 @@
 const metaEl = document.getElementById("meta");
 const errorEl = document.getElementById("error");
+const coordsEl = document.getElementById("coords");
+let tileByChunk = new Map();
 
 const map = L.map("map", {
   crs: L.CRS.Simple,
-  minZoom: -4,
-  maxZoom: 4,
-  zoomSnap: 0.25
+  minZoom: -6,
+  maxZoom: 8,
+  zoomSnap: 0.125
 });
 
 L.control.scale({ imperial: false }).addTo(map);
@@ -32,16 +34,70 @@ async function getJson(url) {
 }
 
 function tileBounds(tile) {
-  const northWest = L.latLng(tile.z, tile.x);
-  const southEast = L.latLng(tile.z + 1, tile.x + 1);
+  const northWest = L.latLng(-tile.z, tile.x);
+  const southEast = L.latLng(-(tile.z + 1), tile.x + 1);
   return L.latLngBounds(northWest, southEast);
+}
+
+function normalizeTile(tile) {
+  if (Number.isFinite(tile.centerX) && Number.isFinite(tile.centerZ)) {
+    return {
+      ...tile,
+      x: Math.trunc((tile.centerX - 8) / 16),
+      z: Math.trunc((tile.centerZ - 8) / 16)
+    };
+  }
+
+  return tile;
+}
+
+function formatHoverCoordinates(latlng) {
+  const mapX = latlng.lng;
+  const mapY = latlng.lat;
+  const chunkX = Math.floor(mapX);
+  const chunkZ = Math.floor(-mapY);
+  const blockX = Math.floor(mapX * 16);
+  const blockZ = Math.floor(-mapY * 16);
+  const key = `${chunkX},${chunkZ}`;
+  const tile = tileByChunk.get(key);
+  const centerText = tile && Number.isFinite(tile.centerX) && Number.isFinite(tile.centerY) && Number.isFinite(tile.centerZ)
+    ? `tileCenter x=${tile.centerX} y=${tile.centerY} z=${tile.centerZ}`
+    : "tileCenter n/a";
+
+  return [
+    `map x=${mapX.toFixed(3)} y=${mapY.toFixed(3)}`,
+    `chunk x=${chunkX} z=${chunkZ}`,
+    `block x=${blockX} z=${blockZ}`,
+    centerText
+  ].join(" | ");
+}
+
+function bindHoverCoordinates() {
+  if (!coordsEl) {
+    return;
+  }
+
+  map.on("mousemove", (event) => {
+    coordsEl.textContent = formatHoverCoordinates(event.latlng);
+  });
+
+  map.on("mouseout", () => {
+    coordsEl.textContent = "Hover map to inspect coordinates";
+  });
 }
 
 function addTiles(snapshotId, dimension, tiles) {
   const bounds = [];
+  const normalizedTiles = tiles
+    .map(normalizeTile)
+    .sort((a, b) => (a.z - b.z) || (a.x - b.x));
 
-  for (const tile of tiles) {
-    const src = `/api/tile?snapshot=${encodeURIComponent(snapshotId)}&dimension=${encodeURIComponent(dimension)}&x=${tile.x}&z=${tile.z}`;
+  tileByChunk = new Map(normalizedTiles.map((tile) => [`${tile.x},${tile.z}`, tile]));
+
+  for (const tile of normalizedTiles) {
+    const src = tile.fileName
+      ? `/api/tile?snapshot=${encodeURIComponent(snapshotId)}&dimension=${encodeURIComponent(dimension)}&file=${encodeURIComponent(tile.fileName)}`
+      : `/api/tile?snapshot=${encodeURIComponent(snapshotId)}&dimension=${encodeURIComponent(dimension)}&x=${tile.x}&z=${tile.z}`;
     const b = tileBounds(tile);
     bounds.push(b);
 
@@ -59,6 +115,7 @@ function addTiles(snapshotId, dimension, tiles) {
 async function bootstrap() {
   try {
     clearError();
+    bindHoverCoordinates();
 
     const latest = await getJson("/api/snapshot/latest");
     const snapshotId = latest.snapshotId;
