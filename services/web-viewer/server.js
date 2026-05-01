@@ -1,23 +1,51 @@
-// Load environment variables from .env file
-import dotenv from "dotenv";
-dotenv.config();
-import fs from "node:fs";
-import fsp from "node:fs/promises";
-import http from "node:http";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+const fs = require("node:fs");
+const fsp = require("node:fs/promises");
+const http = require("node:http");
+const path = require("node:path");
+const dotenv = require("dotenv");
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..", "..");
 const publicRoot = path.join(__dirname, "public");
-const port = Number(process.env.PORT || 4173);
 
-const configuredOutput = process.env.MAP_OUTPUT_DIR
-  ? path.resolve(process.env.MAP_OUTPUT_DIR)
-  : null;
+dotenv.config({ path: path.join(projectRoot, ".env"), quiet: true });
 
-console.log("MAP IS", configuredOutput);
+const DEFAULT_PORT = 4173;
+const MAX_PORT_FALLBACK_ATTEMPTS = 20;
+
+function parsePort(value) {
+  const portNumber = Number(value);
+  return Number.isInteger(portNumber) && portNumber > 0 && portNumber <= 65535
+    ? portNumber
+    : DEFAULT_PORT;
+}
+
+const port = parsePort(process.env.PORT || DEFAULT_PORT);
+const canTryFallbackPorts = !process.env.PORT;
+
+function cleanConfiguredPath(value) {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+
+  return trimmed;
+}
+
+function resolveConfiguredPath(value) {
+  if (!value || !value.trim()) {
+    return null;
+  }
+
+  const cleaned = cleanConfiguredPath(value);
+  return path.isAbsolute(cleaned)
+    ? path.normalize(cleaned)
+    : path.resolve(projectRoot, cleaned);
+}
+
+const configuredOutput = resolveConfiguredPath(process.env.MAP_OUTPUT_DIR);
 
 const fallbackRoots = [
   configuredOutput,
@@ -291,9 +319,35 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
-server.listen(port, () => {
-  // eslint-disable-next-line no-console
-  console.log(`[web-viewer] Listening on http://localhost:${port}`);
-  // eslint-disable-next-line no-console
-  console.log(`[web-viewer] Map output root: ${getMapOutputRoot()}`);
-});
+function listen(portToTry, remainingFallbackAttempts = MAX_PORT_FALLBACK_ATTEMPTS) {
+  server.once("error", (error) => {
+    if (error.code === "EADDRINUSE" && canTryFallbackPorts && remainingFallbackAttempts > 0) {
+      const nextPort = portToTry + 1;
+      // eslint-disable-next-line no-console
+      console.warn(`[web-viewer] Port ${portToTry} is in use, trying ${nextPort}...`);
+      listen(nextPort, remainingFallbackAttempts - 1);
+      return;
+    }
+
+    if (error.code === "EADDRINUSE") {
+      // eslint-disable-next-line no-console
+      console.error(`[web-viewer] Port ${portToTry} is already in use. Set PORT=another_number or stop the existing server.`);
+    } else {
+      // eslint-disable-next-line no-console
+      console.error(error);
+    }
+
+    process.exitCode = 1;
+  });
+
+  server.listen(portToTry, () => {
+    // eslint-disable-next-line no-console
+    console.log(`[web-viewer] Listening on http://localhost:${portToTry}`);
+    // eslint-disable-next-line no-console
+    console.log(`[web-viewer] Map output root: ${getMapOutputRoot()}`);
+    // eslint-disable-next-line no-console
+    console.log(`[web-viewer] Project env: ${path.join(projectRoot, ".env")}`);
+  });
+}
+
+listen(port);

@@ -1,4 +1,8 @@
 {
+  "scripts": {
+    "start": "node services/web-viewer/server.js",
+    "viewer": "node services/web-viewer/server.js"
+  },
   "dependencies": {
     "dotenv": "^17.4.2"
   }
