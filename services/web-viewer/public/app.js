@@ -1,16 +1,45 @@
 const metaEl = document.getElementById("meta");
 const errorEl = document.getElementById("error");
 const coordsEl = document.getElementById("coords");
-let tileByChunk = new Map();
+const BLOCKS_PER_CHUNK = 16;
 
 const map = L.map("map", {
   crs: L.CRS.Simple,
   minZoom: -6,
   maxZoom: 8,
-  zoomSnap: 0.125
+  zoomSnap: 0.125,
+  attributionControl: false
 });
 
-L.control.scale({ imperial: false }).addTo(map);
+function formatBlockScale(blocks) {
+  const value = Number.isInteger(blocks)
+    ? String(blocks)
+    : blocks.toFixed(3).replace(/\.?0+$/, "");
+  return `${value} ${blocks === 1 ? "block" : "blocks"}`;
+}
+
+function getRoundBlockScale(maxBlocks) {
+  if (maxBlocks >= 1) {
+    return L.Control.Scale.prototype._getRoundNum(maxBlocks);
+  }
+
+  return 2 ** Math.floor(Math.log2(maxBlocks));
+}
+
+const BlockScaleControl = L.Control.Scale.extend({
+  _updateMetric(maxBlocks) {
+    if (!Number.isFinite(maxBlocks) || maxBlocks <= 0) {
+      this._mScale.style.display = "none";
+      return;
+    }
+
+    this._mScale.style.display = "";
+    const blocks = getRoundBlockScale(maxBlocks);
+    this._updateScale(this._mScale, formatBlockScale(blocks), blocks / maxBlocks);
+  }
+});
+
+new BlockScaleControl({ imperial: false }).addTo(map);
 
 function showError(message) {
   errorEl.textContent = message;
@@ -34,8 +63,12 @@ async function getJson(url) {
 }
 
 function tileBounds(tile) {
-  const northWest = L.latLng(-tile.z, tile.x);
-  const southEast = L.latLng(-(tile.z + 1), tile.x + 1);
+  const west = tile.x * BLOCKS_PER_CHUNK;
+  const east = west + BLOCKS_PER_CHUNK;
+  const north = -(tile.z * BLOCKS_PER_CHUNK);
+  const south = north - BLOCKS_PER_CHUNK;
+  const northWest = L.latLng(north, west);
+  const southEast = L.latLng(south, east);
   return L.latLngBounds(northWest, southEast);
 }
 
@@ -43,8 +76,8 @@ function normalizeTile(tile) {
   if (Number.isFinite(tile.centerX) && Number.isFinite(tile.centerZ)) {
     return {
       ...tile,
-      x: Math.trunc((tile.centerX - 8) / 16),
-      z: Math.trunc((tile.centerZ - 8) / 16)
+      x: Math.trunc((tile.centerX - (BLOCKS_PER_CHUNK / 2)) / BLOCKS_PER_CHUNK),
+      z: Math.trunc((tile.centerZ - (BLOCKS_PER_CHUNK / 2)) / BLOCKS_PER_CHUNK)
     };
   }
 
@@ -52,24 +85,9 @@ function normalizeTile(tile) {
 }
 
 function formatHoverCoordinates(latlng) {
-  const mapX = latlng.lng;
-  const mapY = latlng.lat;
-  const chunkX = Math.floor(mapX);
-  const chunkZ = Math.floor(-mapY);
-  const blockX = Math.floor(mapX * 16);
-  const blockZ = Math.floor(-mapY * 16);
-  const key = `${chunkX},${chunkZ}`;
-  const tile = tileByChunk.get(key);
-  const centerText = tile && Number.isFinite(tile.centerX) && Number.isFinite(tile.centerY) && Number.isFinite(tile.centerZ)
-    ? `tileCenter x=${tile.centerX} y=${tile.centerY} z=${tile.centerZ}`
-    : "tileCenter n/a";
-
-  return [
-    `map x=${mapX.toFixed(3)} y=${mapY.toFixed(3)}`,
-    `chunk x=${chunkX} z=${chunkZ}`,
-    `block x=${blockX} z=${blockZ}`,
-    centerText
-  ].join(" | ");
+  const blockX = Math.floor(latlng.lng);
+  const blockZ = Math.floor(-latlng.lat);
+  return `block x=${blockX} z=${blockZ}`;
 }
 
 function bindHoverCoordinates() {
@@ -82,7 +100,7 @@ function bindHoverCoordinates() {
   });
 
   map.on("mouseout", () => {
-    coordsEl.textContent = "Hover map to inspect coordinates";
+    coordsEl.textContent = "Hover map to inspect block coordinates";
   });
 }
 
@@ -91,8 +109,6 @@ function addTiles(snapshotId, dimension, tiles) {
   const normalizedTiles = tiles
     .map(normalizeTile)
     .sort((a, b) => (a.z - b.z) || (a.x - b.x));
-
-  tileByChunk = new Map(normalizedTiles.map((tile) => [`${tile.x},${tile.z}`, tile]));
 
   for (const tile of normalizedTiles) {
     const src = tile.fileName
@@ -131,6 +147,7 @@ async function bootstrap() {
     metaEl.textContent = [
       `snapshot=${snapshotId}`,
       `dimension=${defaultDimension}`,
+      `scale=blocks`,
       `tiles=${meta.tileCount}`
     ].join(" | ");
   } catch (error) {

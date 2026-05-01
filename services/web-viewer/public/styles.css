@@ -96,15 +96,18 @@ body {
   position: absolute;
   left: 12px;
   bottom: 12px;
+  z-index: 1001;
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 8px 10px;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(12, 24, 36, 0.82);
+  background: rgba(12, 24, 36, 0.92);
   font-size: 0.82rem;
   color: var(--text-soft);
+  pointer-events: none;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.18);
 }
 
 .legend strong {
@@ -148,11 +151,6 @@ body {
 
 .leaflet-container {
   background: #0c121b;
-}
-
-.leaflet-control-attribution {
-  background: rgba(10, 16, 24, 0.75) !important;
-  color: var(--text-soft) !important;
 }
 
 @media (max-width: 780px) {
