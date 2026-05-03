@@ -18,7 +18,15 @@
         <h1>Minecraft Map Viewer</h1>
         <p>Map-first MVP viewer for exported chunk tiles</p>
       </div>
-      <div class="meta" id="meta">Loading map metadata...</div>
+      <div class="topbar-side">
+        <div class="meta" id="meta">Loading map metadata...</div>
+        <div class="actions">
+          <select class="dimension-select hidden" id="dimension-select" aria-label="Dimension"></select>
+          <input id="snapshot-upload" type="file" multiple webkitdirectory directory hidden />
+          <button class="upload-button" id="upload-button" type="button">Upload snapshots</button>
+          <span class="upload-status" id="upload-status" aria-live="polite"></span>
+        </div>
+      </div>
     </header>
 
     <main class="panel map-panel">

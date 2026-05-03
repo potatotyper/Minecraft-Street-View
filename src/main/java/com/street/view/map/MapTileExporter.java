@@ -33,7 +33,9 @@ public final class MapTileExporter {
         int centerBlockZ,
         int blockPixelSize
     ) throws IOException {
-        String snapshotId = DateTimeFormatter.ISO_INSTANT.format(Instant.now()).replace(':', '-');
+        Instant exportTime = Instant.now();
+        String createdAt = DateTimeFormatter.ISO_INSTANT.format(exportTime);
+        String snapshotId = createdAt.replace(':', '-');
 
         String dimensionId = dimensionName(world);
         String dimensionFolder = dimensionId;
@@ -63,6 +65,7 @@ public final class MapTileExporter {
         Path manifestPath = snapshotDir.resolve("manifest.json");
         ExportManifest manifest = new ExportManifest(
             snapshotId,
+            createdAt,
             world.getServer().getWorldData().getLevelName(),
             dimensionId,
             radiusChunks,
@@ -131,6 +134,7 @@ public final class MapTileExporter {
 
     private record ExportManifest(
         String snapshotId,
+        String createdAt,
         String worldName,
         String dimension,
         int radiusChunks,
