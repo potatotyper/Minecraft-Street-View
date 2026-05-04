@@ -153,6 +153,7 @@ function contentType(filePath) {
   if (ext === ".js") return "application/javascript; charset=utf-8";
   if (ext === ".json") return "application/json; charset=utf-8";
   if (ext === ".png") return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
   return "application/octet-stream";
 }
 
@@ -170,6 +171,16 @@ async function readUploadMeta(snapshotPath) {
   const uploadMetaPath = path.join(snapshotPath, "upload.json");
   try {
     const raw = await fsp.readFile(uploadMetaPath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function readStreetViewIndex(snapshotPath) {
+  const streetViewPath = path.join(snapshotPath, "streetview.json");
+  try {
+    const raw = await fsp.readFile(streetViewPath, "utf8");
     return JSON.parse(raw);
   } catch {
     return null;
@@ -194,6 +205,7 @@ async function listSnapshots() {
     const snapshotPath = path.join(root, snapshotId);
     const manifest = await readManifest(snapshotPath);
     const uploadMeta = await readUploadMeta(snapshotPath);
+    const streetView = await readStreetViewIndex(snapshotPath);
     const stats = await fsp.stat(snapshotPath);
     const createdTimeMs = snapshotTimeMs(snapshotId, manifest, stats);
     const uploadTimeMs = parseDateCandidate(uploadMeta?.uploadedAt);
@@ -202,6 +214,7 @@ async function listSnapshots() {
       snapshotPath,
       manifest,
       uploadMeta,
+      streetView,
       createdAt: Number.isFinite(createdTimeMs) && createdTimeMs > 0
         ? new Date(createdTimeMs).toISOString()
         : null,
@@ -294,6 +307,92 @@ function boundsForTiles(tiles) {
   const minZ = Math.min(...tiles.map((tile) => tile.z));
   const maxZ = Math.max(...tiles.map((tile) => tile.z));
   return { minX, maxX, minZ, maxZ };
+}
+
+function normalizeStreetViewAssetPath(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  const normalized = value.replaceAll("\\", "/").replace(/^\/+/, "");
+  const parts = normalized.split("/").filter(Boolean);
+  const fileName = parts.at(-1) || "";
+  const ext = path.extname(fileName).toLowerCase();
+
+  if (
+    parts.length === 0 ||
+    parts.some((part) => !isSafeUploadSegment(part)) ||
+    ![".jpg", ".jpeg", ".png"].includes(ext)
+  ) {
+    return null;
+  }
+
+  return parts;
+}
+
+function streetViewNodeDimension(index, node) {
+  return typeof node?.dimension === "string" && node.dimension.trim()
+    ? node.dimension
+    : index?.dimension;
+}
+
+function publicStreetViewNode(snapshot, index, node) {
+  const panoramaPath = node?.panoramaPath || node?.panoPath || node?.path || "";
+  const thumbnailPath = node?.thumbnailPath || node?.thumbPath || "";
+  const panoramaParts = normalizeStreetViewAssetPath(panoramaPath);
+
+  if (!panoramaParts || node?.status !== "complete") {
+    return null;
+  }
+
+  return {
+    snapshotId: snapshot.snapshotId,
+    nodeId: node.id || node.nodeId || `${snapshot.snapshotId}_${snapshot.streetView?.nodes?.indexOf(node) || 0}`,
+    dimension: streetViewNodeDimension(index, node),
+    x: Number(node.x),
+    y: Number(node.y),
+    z: Number(node.z),
+    yaw: Number(node.yaw || 0),
+    pitch: Number(node.pitch || 0),
+    projection: node.projection || "equirectangular",
+    width: Number(node.width || 2048),
+    height: Number(node.height || 1024),
+    format: node.format || "jpeg",
+    includesEntities: Boolean(node.includesEntities),
+    panoramaPath,
+    thumbnailPath: normalizeStreetViewAssetPath(thumbnailPath) ? thumbnailPath : "",
+    createdAt: index?.createdAt || snapshot.createdAt
+  };
+}
+
+async function getStreetViewNodesForDimension(snapshots, dimension) {
+  const nodes = [];
+
+  for (const snapshot of snapshots) {
+    const index = snapshot.streetView;
+    if (!index || !Array.isArray(index.nodes)) {
+      continue;
+    }
+
+    for (const node of index.nodes) {
+      if (streetViewNodeDimension(index, node) !== dimension) {
+        continue;
+      }
+
+      const publicNode = publicStreetViewNode(snapshot, index, node);
+      if (
+        publicNode &&
+        Number.isFinite(publicNode.x) &&
+        Number.isFinite(publicNode.y) &&
+        Number.isFinite(publicNode.z)
+      ) {
+        nodes.push(publicNode);
+      }
+    }
+  }
+
+  nodes.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "") || a.nodeId.localeCompare(b.nodeId));
+  return nodes;
 }
 
 async function getTilesForDimension(snapshotId, dimension) {
@@ -429,6 +528,8 @@ async function getCurrentMap(requestedDimension) {
     };
   }
 
+  const streetViewNodes = await getStreetViewNodesForDimension(snapshots, dimension);
+
   return {
     status: 200,
     payload: {
@@ -440,6 +541,7 @@ async function getCurrentMap(requestedDimension) {
       sourceSnapshotCount: sourceSnapshots.size,
       updatedAt: newestTileTimeMs > 0 ? new Date(newestTileTimeMs).toISOString() : null,
       bounds: boundsForTiles(tiles),
+      streetViewNodes,
       tiles
     }
   };
@@ -471,7 +573,11 @@ function normalizeUploadPath(fileName) {
 function isAllowedUploadedFile(fileName) {
   return fileName === "manifest.json" ||
     fileName === "upload.json" ||
-    fileName.endsWith(".png");
+    fileName === "streetview.json" ||
+    fileName === "capture.json" ||
+    fileName.endsWith(".png") ||
+    fileName.endsWith(".jpg") ||
+    fileName.endsWith(".jpeg");
 }
 
 async function removeDirectoryIfExists(directory) {
@@ -770,6 +876,7 @@ async function handleApi(request, response, url) {
         snapshotId: snapshot.snapshotId,
         manifest: snapshot.manifest,
         uploadMeta: snapshot.uploadMeta,
+        streetView: snapshot.streetView,
         createdAt: snapshot.createdAt
       }))
     });
@@ -785,6 +892,29 @@ async function handleApi(request, response, url) {
 
     const result = await getCurrentMap(dimension || null);
     sendJson(response, result.status, result.payload);
+    return;
+  }
+
+  if (url.pathname === "/api/streetview/current") {
+    const dimension = url.searchParams.get("dimension") || "";
+    if (dimension && !sanitizeSegment(dimension)) {
+      sendJson(response, 400, { error: "Invalid dimension." });
+      return;
+    }
+
+    const snapshots = await listSnapshots();
+    const { dimensions } = await collectDimensions(snapshots);
+    const selectedDimension = dimension || chooseDefaultDimension(snapshots, dimensions);
+    if (!selectedDimension) {
+      sendJson(response, 404, { error: "No dimensions found.", dimensions });
+      return;
+    }
+
+    sendJson(response, 200, {
+      dimension: selectedDimension,
+      dimensions,
+      nodes: await getStreetViewNodesForDimension(snapshots, selectedDimension)
+    });
     return;
   }
 
@@ -866,6 +996,36 @@ async function handleApi(request, response, url) {
 
     const stream = fs.createReadStream(filePath);
     response.writeHead(200, { "Content-Type": "image/png" });
+    stream.pipe(response);
+    return;
+  }
+
+  if (url.pathname === "/api/panorama") {
+    const snapshotId = url.searchParams.get("snapshot") || "";
+    const assetPath = url.searchParams.get("path") || "";
+    const assetParts = normalizeStreetViewAssetPath(assetPath);
+
+    if (!sanitizeSegment(snapshotId) || !assetParts) {
+      sendJson(response, 400, { error: "Invalid panorama request." });
+      return;
+    }
+
+    const root = getMapOutputRoot();
+    const snapshotDir = path.resolve(root, snapshotId);
+    const filePath = path.resolve(snapshotDir, ...assetParts);
+
+    if (!isWithinDirectory(snapshotDir, filePath)) {
+      sendJson(response, 403, { error: "Forbidden panorama path." });
+      return;
+    }
+
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      sendJson(response, 404, { error: "Panorama not found." });
+      return;
+    }
+
+    const stream = fs.createReadStream(filePath);
+    response.writeHead(200, { "Content-Type": contentType(filePath) });
     stream.pipe(response);
     return;
   }

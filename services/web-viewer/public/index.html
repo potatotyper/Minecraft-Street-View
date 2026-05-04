@@ -32,6 +32,13 @@
     <main class="panel map-panel">
       <div class="coords" id="coords">Hover map to inspect block coordinates</div>
       <div id="map"></div>
+      <div class="pano-panel hidden" id="pano-panel" aria-live="polite">
+        <div class="pano-toolbar">
+          <div class="pano-title" id="pano-title">Street View</div>
+          <button class="pano-close" id="pano-close" type="button" aria-label="Close panorama">Close</button>
+        </div>
+        <div class="pano-view" id="pano-view"></div>
+      </div>
       <div class="legend" id="legend">
         <strong>Controls</strong>
         <span>Scroll: zoom</span>

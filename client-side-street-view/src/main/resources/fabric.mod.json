@@ -1,0 +1,28 @@
+{
+	"schemaVersion": 1,
+	"id": "client-side-street-view",
+	"version": "${version}",
+	"name": "Client-side Street View Capture",
+	"description": "Client-side 360 panorama capture worker for Minecraft Street View.",
+	"authors": [
+		"Me!"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/client-side-street-view/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.street.view.capture.client.ClientSideStreetViewClient"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.1",
+		"minecraft": "~26.1.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

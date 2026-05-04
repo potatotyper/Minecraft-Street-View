@@ -1,47 +1,31 @@
 # gradle
-
 .gradle/
 build/
 out/
 classes/
+*/.gradle/
+*/build/
+*/out/
 
-# eclipse
-
-*.launch
-
-# idea
-
+# ide
 .idea/
+.vscode/
 *.iml
 *.ipr
 *.iws
 
-# vscode
-
-.settings/
-.vscode/
-bin/
-.classpath
-.project
-
 # node
-
 node_modules/
 
-# macos
-
-*.DS_Store
-
-# fabric
-
+# fabric/runtime output
 run/
 streetview-map/
+*/run/
+*/streetview-map/
 
-# java
-
+# env and logs
+*.env*
 hs_err_*.log
 replay_*.log
 *.hprof
 *.jfr
-
-*.env*
