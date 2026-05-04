@@ -1,7 +1,7 @@
 {
   "scripts": {
-    "start": "node services/web-viewer/server.js",
-    "viewer": "node services/web-viewer/server.js"
+    "start": "node ../services/web-viewer/server.js",
+    "viewer": "node ../services/web-viewer/server.js"
   },
   "dependencies": {
     "busboy": "^1.6.0",
