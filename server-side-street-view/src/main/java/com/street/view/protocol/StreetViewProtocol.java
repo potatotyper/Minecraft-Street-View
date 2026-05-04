@@ -4,8 +4,8 @@ import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 
 public final class StreetViewProtocol {
     public static final String MOD_ID = "minecraft-street-view";
-    public static final int PANORAMA_WIDTH = 2048;
-    public static final int PANORAMA_HEIGHT = 1024;
+    public static final int PANORAMA_WIDTH = 4096;
+    public static final int PANORAMA_HEIGHT = 2048;
     public static final String PANORAMA_FORMAT = "jpeg";
     public static final int SCHEMA_VERSION = 1;
 

@@ -12,6 +12,9 @@ const panoViewEl = document.getElementById("pano-view");
 const panoTitleEl = document.getElementById("pano-title");
 const panoCloseEl = document.getElementById("pano-close");
 const BLOCKS_PER_CHUNK = 16;
+const STREETVIEW_MARKER_SIZE = 18;
+const STREETVIEW_OVERLAP_DISTANCE = 22;
+const STREETVIEW_LINE_CONNECT_DISTANCE = 42;
 
 const map = L.map("map", {
   crs: L.CRS.Simple,
@@ -25,6 +28,7 @@ const tileLayer = L.layerGroup().addTo(map);
 const streetViewLayer = L.layerGroup().addTo(map);
 let selectedDimension = "";
 let activePanorama = null;
+let streetViewNodes = [];
 
 function formatBlockScale(blocks) {
   const value = Number.isInteger(blocks)
@@ -191,16 +195,48 @@ function panoramaImageSource(node) {
 }
 
 function addStreetViewMarkers(nodes) {
+  streetViewNodes = Array.isArray(nodes) ? nodes : [];
+  renderStreetViewLayer();
+}
+
+function renderStreetViewLayer() {
   streetViewLayer.clearLayers();
+
+  if (streetViewNodes.length === 0) {
+    return;
+  }
 
   const icon = L.divIcon({
     className: "streetview-marker",
     html: "<span></span>",
-    iconSize: [18, 18],
-    iconAnchor: [9, 9]
+    iconSize: [STREETVIEW_MARKER_SIZE, STREETVIEW_MARKER_SIZE],
+    iconAnchor: [STREETVIEW_MARKER_SIZE / 2, STREETVIEW_MARKER_SIZE / 2]
   });
+  const runs = buildStreetViewRuns(streetViewNodes);
+  const lineNodeIds = new Set(runs.flatMap((run) => run.map(streetViewNodeKey)));
 
-  for (const node of nodes) {
+  for (const run of runs) {
+    const orderedRun = orderStreetViewRun(run);
+    const latLngs = orderedRun.map(streetViewLatLng);
+
+    L.polyline(latLngs, {
+      className: "streetview-line",
+      color: "#ffb75e",
+      weight: 5,
+      opacity: 0.9,
+      lineCap: "round",
+      lineJoin: "round",
+      interactive: true
+    })
+      .on("click", (event) => openPanorama(nearestStreetViewNode(orderedRun, event.latlng)))
+      .addTo(streetViewLayer);
+  }
+
+  for (const node of streetViewNodes) {
+    if (lineNodeIds.has(streetViewNodeKey(node))) {
+      continue;
+    }
+
     L.marker(streetViewLatLng(node), {
       icon,
       keyboard: true,
@@ -209,6 +245,115 @@ function addStreetViewMarkers(nodes) {
       .on("click", () => openPanorama(node))
       .addTo(streetViewLayer);
   }
+}
+
+function buildStreetViewRuns(nodes) {
+  const parent = new Map(nodes.map((node) => [streetViewNodeKey(node), streetViewNodeKey(node)]));
+
+  function find(nodeId) {
+    const parentId = parent.get(nodeId);
+    if (parentId === nodeId) {
+      return nodeId;
+    }
+
+    const root = find(parentId);
+    parent.set(nodeId, root);
+    return root;
+  }
+
+  function union(a, b) {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) {
+      parent.set(rootB, rootA);
+    }
+  }
+
+  const points = nodes.map((node) => ({
+    node,
+    point: map.latLngToLayerPoint(streetViewLatLng(node))
+  }));
+
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      const distance = points[i].point.distanceTo(points[j].point);
+      if (distance <= STREETVIEW_LINE_CONNECT_DISTANCE) {
+        union(streetViewNodeKey(points[i].node), streetViewNodeKey(points[j].node));
+      }
+    }
+  }
+
+  const groups = new Map();
+  for (const node of nodes) {
+    const root = find(streetViewNodeKey(node));
+    const group = groups.get(root) || [];
+    group.push(node);
+    groups.set(root, group);
+  }
+
+  return Array.from(groups.values()).filter((group) => hasOverlappingMarkerPair(group));
+}
+
+function hasOverlappingMarkerPair(nodes) {
+  if (nodes.length < 2) {
+    return false;
+  }
+
+  const points = nodes.map((node) => map.latLngToLayerPoint(streetViewLatLng(node)));
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      if (points[i].distanceTo(points[j]) <= STREETVIEW_OVERLAP_DISTANCE) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function orderStreetViewRun(nodes) {
+  if (nodes.length <= 2) {
+    return nodes;
+  }
+
+  const remaining = [...nodes].sort((a, b) => (a.x - b.x) || (a.z - b.z) || streetViewNodeKey(a).localeCompare(streetViewNodeKey(b)));
+  const ordered = [remaining.shift()];
+
+  while (remaining.length > 0) {
+    const current = ordered.at(-1);
+    let nearestIndex = 0;
+    let nearestDistance = Infinity;
+
+    for (let i = 0; i < remaining.length; i++) {
+      const distance = worldDistanceSquared(current, remaining[i]);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestIndex = i;
+      }
+    }
+
+    ordered.push(remaining.splice(nearestIndex, 1)[0]);
+  }
+
+  return ordered;
+}
+
+function nearestStreetViewNode(nodes, latlng) {
+  const target = map.latLngToLayerPoint(latlng);
+  return nodes.reduce((nearest, node) => {
+    const distance = target.distanceTo(map.latLngToLayerPoint(streetViewLatLng(node)));
+    return distance < nearest.distance ? { node, distance } : nearest;
+  }, { node: nodes[0], distance: Infinity }).node;
+}
+
+function worldDistanceSquared(a, b) {
+  const dx = a.x - b.x;
+  const dz = a.z - b.z;
+  return (dx * dx) + (dz * dz);
+}
+
+function streetViewNodeKey(node) {
+  return `${node.snapshotId}:${node.nodeId}`;
 }
 
 function updateDimensionSelect(dimensions, dimension) {
@@ -443,6 +588,11 @@ function bindPanoramaControls() {
   panoCloseEl?.addEventListener("click", closePanorama);
 }
 
+function bindStreetViewZoomRendering() {
+  map.on("zoomend", renderStreetViewLayer);
+  map.on("viewreset", renderStreetViewLayer);
+}
+
 async function bootstrap() {
   try {
     clearError();
@@ -450,6 +600,7 @@ async function bootstrap() {
     bindDimensionSelect();
     bindUploadControls();
     bindPanoramaControls();
+    bindStreetViewZoomRendering();
     await loadCurrentMap();
   } catch (error) {
     showError(error.message);
