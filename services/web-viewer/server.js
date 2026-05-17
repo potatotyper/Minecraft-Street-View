@@ -51,6 +51,8 @@ function resolveConfiguredPath(value) {
 }
 
 const configuredOutput = resolveConfiguredPath(process.env.MAP_OUTPUT_DIR);
+const configuredInstancesRoot = resolveConfiguredPath(process.env.WORLD_REGISTRY_DIR);
+const instancesRoot = configuredInstancesRoot || path.join(__dirname, "instances");
 
 const fallbackRoots = [
   configuredOutput,
@@ -66,6 +68,195 @@ function getMapOutputRoot() {
   }
 
   return fallbackRoots[0];
+}
+
+function sanitizeWorldId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9._-]+$/.test(value);
+}
+
+function cleanWorldId(value, fallback = "world") {
+  const rawValue = typeof value === "string" && value.trim() ? value.trim() : fallback;
+  const cleaned = rawValue
+    .replaceAll(":", "-")
+    .replace(/[^A-Za-z0-9._-]/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+
+  if (!cleaned || cleaned === "." || cleaned === "..") {
+    return fallback;
+  }
+
+  return cleaned;
+}
+
+function titleFromWorldId(worldId) {
+  return worldId
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+async function readJsonFile(filePath) {
+  try {
+    return JSON.parse(await fsp.readFile(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function readWorldMetadata(worldDirectory) {
+  return readJsonFile(path.join(worldDirectory, "world.json"));
+}
+
+function resolveWorldMapRoot(worldDirectory, metadata) {
+  const configuredRoot = metadata?.mapOutputDir || metadata?.mapOutputRoot || "";
+  if (typeof configuredRoot === "string" && configuredRoot.trim()) {
+    const cleaned = cleanConfiguredPath(configuredRoot);
+    return path.isAbsolute(cleaned)
+      ? path.normalize(cleaned)
+      : path.resolve(worldDirectory, cleaned);
+  }
+
+  return path.join(worldDirectory, "streetview-map");
+}
+
+function publicWorldDescriptor(world) {
+  return {
+    id: world.id,
+    name: world.name,
+    description: world.description,
+    serverAddress: world.serverAddress || "",
+    href: `/world/${encodeURIComponent(world.id)}`,
+    mapOutputRoot: world.mapOutputRoot,
+    source: world.source
+  };
+}
+
+async function discoverRegisteredWorlds() {
+  const worlds = [];
+
+  if (fs.existsSync(instancesRoot)) {
+    const entries = await fsp.readdir(instancesRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) {
+        continue;
+      }
+
+      const worldDirectory = path.join(instancesRoot, entry.name);
+      const metadata = await readWorldMetadata(worldDirectory);
+      const id = cleanWorldId(metadata?.id || entry.name, entry.name);
+      const mapOutputRoot = resolveWorldMapRoot(worldDirectory, metadata);
+
+      worlds.push({
+        id,
+        name: metadata?.name || titleFromWorldId(id),
+        description: metadata?.description || "Street View is enabled for this world.",
+        serverAddress: metadata?.serverAddress || "",
+        registeredAt: metadata?.registeredAt || null,
+        mapOutputRoot,
+        registryPath: worldDirectory,
+        source: "registry"
+      });
+    }
+  }
+
+  const legacyRoot = getMapOutputRoot();
+  const hasLegacyRoot = legacyRoot && fs.existsSync(legacyRoot);
+  const isLegacyAlreadyRegistered = worlds.some((world) =>
+    path.resolve(world.mapOutputRoot) === path.resolve(legacyRoot)
+  );
+
+  if (hasLegacyRoot && !isLegacyAlreadyRegistered) {
+    worlds.push({
+      id: "local",
+      name: "Local Street View",
+      description: "Snapshots from MAP_OUTPUT_DIR or the default local streetview-map folder.",
+      serverAddress: "",
+      registeredAt: null,
+      mapOutputRoot: legacyRoot,
+      registryPath: null,
+      source: "legacy"
+    });
+  }
+
+  const uniqueById = new Map();
+  for (const world of worlds) {
+    if (!uniqueById.has(world.id)) {
+      uniqueById.set(world.id, world);
+    }
+  }
+
+  return Array.from(uniqueById.values());
+}
+
+async function getWorldById(worldId) {
+  if (!sanitizeWorldId(worldId)) {
+    return null;
+  }
+
+  const worlds = await discoverRegisteredWorlds();
+  return worlds.find((world) => world.id === worldId) || null;
+}
+
+async function getRequestWorld(url) {
+  const worldId = url.searchParams.get("world") || "";
+  if (worldId) {
+    return getWorldById(worldId);
+  }
+
+  return {
+    id: "local",
+    name: "Local Street View",
+    description: "Snapshots from the default local streetview-map output.",
+    serverAddress: "",
+    registeredAt: null,
+    mapOutputRoot: getMapOutputRoot(),
+    registryPath: null,
+    source: "legacy"
+  };
+}
+
+async function summarizeWorld(world) {
+  const snapshots = await listSnapshots(world.mapOutputRoot);
+  const { dimensions } = await collectDimensions(snapshots);
+  let tileCount = 0;
+  let streetViewNodeCount = 0;
+  let updatedTimeMs = 0;
+
+  for (const snapshot of snapshots) {
+    updatedTimeMs = Math.max(updatedTimeMs, snapshot.createdTimeMs || 0, snapshot.uploadTimeMs || 0);
+    const snapshotDimensions = await listSnapshotDimensions(snapshot);
+    for (const dimension of snapshotDimensions) {
+      tileCount += (await getTilesForDimension(snapshot.snapshotId, dimension, world.mapOutputRoot)).length;
+    }
+  }
+
+  for (const dimension of dimensions) {
+    streetViewNodeCount += (await getStreetViewNodesForDimension(snapshots, dimension)).length;
+  }
+
+  return {
+    ...publicWorldDescriptor(world),
+    dimensions,
+    snapshotCount: snapshots.length,
+    latestSnapshotId: snapshots[0]?.snapshotId || null,
+    tileCount,
+    streetViewNodeCount,
+    updatedAt: updatedTimeMs > 0 ? new Date(updatedTimeMs).toISOString() : null,
+    status: streetViewNodeCount > 0 ? "ready" : snapshots.length > 0 ? "map-only" : "empty"
+  };
+}
+
+async function listWorldSummaries() {
+  const worlds = await discoverRegisteredWorlds();
+  const summaries = await Promise.all(worlds.map(summarizeWorld));
+  return summaries.sort((a, b) => {
+    const aTime = Date.parse(a.updatedAt || "");
+    const bTime = Date.parse(b.updatedAt || "");
+    const newestFirst = (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+    return newestFirst ||
+      b.streetViewNodeCount - a.streetViewNodeCount ||
+      a.name.localeCompare(b.name);
+  });
 }
 
 function isWithinDirectory(parent, child) {
@@ -151,6 +342,7 @@ function contentType(filePath) {
   if (ext === ".html") return "text/html; charset=utf-8";
   if (ext === ".css") return "text/css; charset=utf-8";
   if (ext === ".js") return "application/javascript; charset=utf-8";
+  if (ext === ".map") return "application/json; charset=utf-8";
   if (ext === ".json") return "application/json; charset=utf-8";
   if (ext === ".png") return "image/png";
   if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
@@ -187,8 +379,7 @@ async function readStreetViewIndex(snapshotPath) {
   }
 }
 
-async function listSnapshots() {
-  const root = getMapOutputRoot();
+async function listSnapshots(root = getMapOutputRoot()) {
   if (!root || !fs.existsSync(root)) {
     return [];
   }
@@ -336,10 +527,54 @@ function streetViewNodeDimension(index, node) {
     : index?.dimension;
 }
 
+function parseNodeIdBlockCoordinates(nodeId) {
+  if (typeof nodeId !== "string") {
+    return null;
+  }
+
+  const match = /^node_(-?\d+(?:\.\d+)?)_(-?\d+(?:\.\d+)?)_(-?\d+(?:\.\d+)?)$/.exec(nodeId);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    blockX: Math.floor(Number(match[1])),
+    blockY: Math.floor(Number(match[2])),
+    blockZ: Math.floor(Number(match[3]))
+  };
+}
+
+function normalizeBlockCoordinates(node, nodeId) {
+  if (
+    Number.isFinite(Number(node?.blockX)) &&
+    Number.isFinite(Number(node?.blockY)) &&
+    Number.isFinite(Number(node?.blockZ))
+  ) {
+    return {
+      blockX: Math.floor(Number(node.blockX)),
+      blockY: Math.floor(Number(node.blockY)),
+      blockZ: Math.floor(Number(node.blockZ))
+    };
+  }
+
+  const parsed = parseNodeIdBlockCoordinates(nodeId);
+  if (parsed) {
+    return parsed;
+  }
+
+  return {
+    blockX: Math.floor(Number(node?.x)),
+    blockY: Math.floor(Number(node?.y)),
+    blockZ: Math.floor(Number(node?.z))
+  };
+}
+
 function publicStreetViewNode(snapshot, index, node) {
   const panoramaPath = node?.panoramaPath || node?.panoPath || node?.path || "";
   const thumbnailPath = node?.thumbnailPath || node?.thumbPath || "";
   const panoramaParts = normalizeStreetViewAssetPath(panoramaPath);
+  const nodeId = node.id || node.nodeId || `${snapshot.snapshotId}_${snapshot.streetView?.nodes?.indexOf(node) || 0}`;
+  const block = normalizeBlockCoordinates(node, nodeId);
 
   if (!panoramaParts || node?.status !== "complete") {
     return null;
@@ -347,11 +582,14 @@ function publicStreetViewNode(snapshot, index, node) {
 
   return {
     snapshotId: snapshot.snapshotId,
-    nodeId: node.id || node.nodeId || `${snapshot.snapshotId}_${snapshot.streetView?.nodes?.indexOf(node) || 0}`,
+    nodeId,
     dimension: streetViewNodeDimension(index, node),
     x: Number(node.x),
     y: Number(node.y),
     z: Number(node.z),
+    blockX: block.blockX,
+    blockY: block.blockY,
+    blockZ: block.blockZ,
     yaw: Number(node.yaw || 0),
     pitch: Number(node.pitch || 0),
     projection: node.projection || "equirectangular",
@@ -384,7 +622,10 @@ async function getStreetViewNodesForDimension(snapshots, dimension) {
         publicNode &&
         Number.isFinite(publicNode.x) &&
         Number.isFinite(publicNode.y) &&
-        Number.isFinite(publicNode.z)
+        Number.isFinite(publicNode.z) &&
+        Number.isFinite(publicNode.blockX) &&
+        Number.isFinite(publicNode.blockY) &&
+        Number.isFinite(publicNode.blockZ)
       ) {
         nodes.push(publicNode);
       }
@@ -395,8 +636,7 @@ async function getStreetViewNodesForDimension(snapshots, dimension) {
   return nodes;
 }
 
-async function getTilesForDimension(snapshotId, dimension) {
-  const root = getMapOutputRoot();
+async function getTilesForDimension(snapshotId, dimension, root = getMapOutputRoot()) {
   const tileDir = path.join(root, snapshotId, "tiles", dimension, "z0");
   if (!fs.existsSync(tileDir)) {
     return [];
@@ -449,8 +689,8 @@ async function getTilesForDimension(snapshotId, dimension) {
     .sort((a, b) => (a.z - b.z) || (a.x - b.x));
 }
 
-async function getCurrentMap(requestedDimension) {
-  const snapshots = await listSnapshots();
+async function getCurrentMap(requestedDimension, root = getMapOutputRoot(), world = null) {
+  const snapshots = await listSnapshots(root);
   const { dimensions } = await collectDimensions(snapshots);
 
   if (snapshots.length === 0) {
@@ -459,7 +699,7 @@ async function getCurrentMap(requestedDimension) {
       payload: {
         error: "No snapshots found.",
         hint: "Run '/streetview map build' in-game or upload an exported snapshot folder.",
-        searchedRoots: fallbackRoots
+        searchedRoots: [root, ...fallbackRoots].filter(Boolean)
       }
     };
   }
@@ -490,7 +730,7 @@ async function getCurrentMap(requestedDimension) {
   let newestTileTimeMs = 0;
 
   for (const snapshot of snapshots) {
-    const tiles = await getTilesForDimension(snapshot.snapshotId, dimension);
+    const tiles = await getTilesForDimension(snapshot.snapshotId, dimension, root);
     for (const tile of tiles) {
       const candidate = {
         ...tile,
@@ -534,6 +774,7 @@ async function getCurrentMap(requestedDimension) {
     status: 200,
     payload: {
       mode: "current",
+      world: world ? publicWorldDescriptor(world) : null,
       dimension,
       dimensions,
       tileCount: tiles.length,
@@ -638,8 +879,7 @@ async function hasTiles(snapshotPath) {
   return false;
 }
 
-async function uniqueSnapshotDestination(baseSnapshotId) {
-  const root = getMapOutputRoot();
+async function uniqueSnapshotDestination(baseSnapshotId, root = getMapOutputRoot()) {
   const safeBaseId = cleanSnapshotId(baseSnapshotId);
   let snapshotId = safeBaseId;
   let destination = path.join(root, snapshotId);
@@ -654,8 +894,7 @@ async function uniqueSnapshotDestination(baseSnapshotId) {
   return { snapshotId, destination };
 }
 
-async function importUploadedSnapshots(stagingDir, uploadStartedAt, uploadedBy) {
-  const root = getMapOutputRoot();
+async function importUploadedSnapshots(stagingDir, uploadStartedAt, uploadedBy, root = getMapOutputRoot()) {
   await fsp.mkdir(root, { recursive: true });
 
   const snapshotDirs = await findUploadedSnapshotDirs(stagingDir);
@@ -677,7 +916,7 @@ async function importUploadedSnapshots(stagingDir, uploadStartedAt, uploadedBy) 
     }
 
     const baseSnapshotId = manifest.snapshotId || path.basename(snapshotDir);
-    const { snapshotId, destination } = await uniqueSnapshotDestination(baseSnapshotId);
+    const { snapshotId, destination } = await uniqueSnapshotDestination(baseSnapshotId, root);
 
     await fsp.cp(snapshotDir, destination, {
       recursive: true,
@@ -713,14 +952,13 @@ function waitForWrite(stream, file) {
   });
 }
 
-async function handleSnapshotUpload(request, response) {
+async function handleSnapshotUpload(request, response, root = getMapOutputRoot()) {
   const requestContentType = request.headers["content-type"] || "";
   if (!requestContentType.includes("multipart/form-data")) {
     sendJson(response, 415, { error: "Upload must use multipart/form-data." });
     return;
   }
 
-  const root = getMapOutputRoot();
   const uploadStartedAt = new Date().toISOString();
   const stagingDir = path.join(root, SNAPSHOT_UPLOAD_DIR_NAME, `${Date.now()}-${crypto.randomUUID()}`);
   await fsp.mkdir(stagingDir, { recursive: true });
@@ -822,7 +1060,8 @@ async function handleSnapshotUpload(request, response) {
   const uploadResult = await importUploadedSnapshots(
     stagingDir,
     uploadStartedAt,
-    fields.get("uploadedBy") || ""
+    fields.get("uploadedBy") || "",
+    root
   );
   await removeDirectoryIfExists(stagingDir);
 
@@ -846,7 +1085,24 @@ async function handleSnapshotUpload(request, response) {
 
 async function handleApi(request, response, url) {
   if (url.pathname === "/api/health") {
-    sendJson(response, 200, { ok: true, mapOutputRoot: getMapOutputRoot() });
+    sendJson(response, 200, {
+      ok: true,
+      mapOutputRoot: getMapOutputRoot(),
+      instancesRoot
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/worlds") {
+    if (request.method !== "GET") {
+      sendJson(response, 405, { error: "Use GET to list worlds." });
+      return;
+    }
+
+    sendJson(response, 200, {
+      instancesRoot,
+      worlds: await listWorldSummaries()
+    });
     return;
   }
 
@@ -856,7 +1112,13 @@ async function handleApi(request, response, url) {
       return;
     }
 
-    await handleSnapshotUpload(request, response);
+    const requestWorld = await getRequestWorld(url);
+    if (!requestWorld) {
+      sendJson(response, 404, { error: "World not found." });
+      return;
+    }
+
+    await handleSnapshotUpload(request, response, requestWorld.mapOutputRoot);
     return;
   }
 
@@ -865,11 +1127,19 @@ async function handleApi(request, response, url) {
     return;
   }
 
+  const requestWorld = await getRequestWorld(url);
+  if (!requestWorld) {
+    sendJson(response, 404, { error: "World not found." });
+    return;
+  }
+  const root = requestWorld.mapOutputRoot;
+
   if (url.pathname === "/api/snapshots") {
-    const snapshots = await listSnapshots();
+    const snapshots = await listSnapshots(root);
     const { dimensions } = await collectDimensions(snapshots);
     sendJson(response, 200, {
-      mapOutputRoot: getMapOutputRoot(),
+      world: publicWorldDescriptor(requestWorld),
+      mapOutputRoot: root,
       snapshotCount: snapshots.length,
       dimensions,
       snapshots: snapshots.map((snapshot) => ({
@@ -890,7 +1160,7 @@ async function handleApi(request, response, url) {
       return;
     }
 
-    const result = await getCurrentMap(dimension || null);
+    const result = await getCurrentMap(dimension || null, root, requestWorld);
     sendJson(response, result.status, result.payload);
     return;
   }
@@ -902,7 +1172,7 @@ async function handleApi(request, response, url) {
       return;
     }
 
-    const snapshots = await listSnapshots();
+    const snapshots = await listSnapshots(root);
     const { dimensions } = await collectDimensions(snapshots);
     const selectedDimension = dimension || chooseDefaultDimension(snapshots, dimensions);
     if (!selectedDimension) {
@@ -911,6 +1181,7 @@ async function handleApi(request, response, url) {
     }
 
     sendJson(response, 200, {
+      world: publicWorldDescriptor(requestWorld),
       dimension: selectedDimension,
       dimensions,
       nodes: await getStreetViewNodesForDimension(snapshots, selectedDimension)
@@ -919,18 +1190,19 @@ async function handleApi(request, response, url) {
   }
 
   if (url.pathname === "/api/snapshot/latest") {
-    const snapshots = await listSnapshots();
+    const snapshots = await listSnapshots(root);
     if (snapshots.length === 0) {
       sendJson(response, 404, {
         error: "No snapshots found.",
         hint: "Run '/streetview map build' in-game or upload an exported snapshot folder.",
-        searchedRoots: fallbackRoots
+        searchedRoots: [root, ...fallbackRoots].filter(Boolean)
       });
       return;
     }
 
     const latest = snapshots[0];
     sendJson(response, 200, {
+      world: publicWorldDescriptor(requestWorld),
       snapshotId: latest.snapshotId,
       manifest: latest.manifest,
       createdAt: latest.createdAt
@@ -947,13 +1219,14 @@ async function handleApi(request, response, url) {
       return;
     }
 
-    const tiles = await getTilesForDimension(snapshotId, dimension);
+    const tiles = await getTilesForDimension(snapshotId, dimension, root);
     if (tiles.length === 0) {
       sendJson(response, 404, { error: "No tiles found for snapshot/dimension." });
       return;
     }
 
     sendJson(response, 200, {
+      world: publicWorldDescriptor(requestWorld),
       snapshotId,
       dimension,
       tileCount: tiles.length,
@@ -975,7 +1248,6 @@ async function handleApi(request, response, url) {
       return;
     }
 
-    const root = getMapOutputRoot();
     const tileDir = path.join(root, snapshotId, "tiles", dimension, "z0");
     let filePath = "";
 
@@ -1010,7 +1282,6 @@ async function handleApi(request, response, url) {
       return;
     }
 
-    const root = getMapOutputRoot();
     const snapshotDir = path.resolve(root, snapshotId);
     const filePath = path.resolve(snapshotDir, ...assetParts);
 
@@ -1043,6 +1314,18 @@ async function handleStatic(response, urlPathname) {
   }
 
   if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) {
+    if (!path.extname(urlPathname)) {
+      const indexPath = path.join(publicRoot, "index.html");
+      const body = await fsp.readFile(indexPath);
+      response.writeHead(200, {
+        "Content-Type": contentType(indexPath),
+        "Cache-Control": "no-cache",
+        "Content-Length": body.byteLength
+      });
+      response.end(body);
+      return;
+    }
+
     sendText(response, 404, "Not found");
     return;
   }
@@ -1050,6 +1333,7 @@ async function handleStatic(response, urlPathname) {
   const body = await fsp.readFile(resolved);
   response.writeHead(200, {
     "Content-Type": contentType(resolved),
+    "Cache-Control": "no-cache",
     "Content-Length": body.byteLength
   });
   response.end(body);
@@ -1097,6 +1381,8 @@ function listen(portToTry, remainingFallbackAttempts = MAX_PORT_FALLBACK_ATTEMPT
     console.log(`[web-viewer] Listening on http://localhost:${portToTry}`);
     // eslint-disable-next-line no-console
     console.log(`[web-viewer] Map output root: ${getMapOutputRoot()}`);
+    // eslint-disable-next-line no-console
+    console.log(`[web-viewer] Instances root: ${instancesRoot}`);
     // eslint-disable-next-line no-console
     console.log(`[web-viewer] Project env: ${path.join(projectRoot, ".env")}`);
   });

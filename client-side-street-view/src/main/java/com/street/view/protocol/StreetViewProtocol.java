@@ -7,7 +7,7 @@ public final class StreetViewProtocol {
     public static final int PANORAMA_WIDTH = 4096;
     public static final int PANORAMA_HEIGHT = 2048;
     public static final String PANORAMA_FORMAT = "jpeg";
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
 
     private static boolean clientboundRegistered;
     private static boolean serverboundRegistered;

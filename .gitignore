@@ -16,6 +16,8 @@ classes/
 
 # node
 node_modules/
+services/web-viewer/public/build/
+services/web-viewer/.test-dist/
 
 # fabric/runtime output
 run/

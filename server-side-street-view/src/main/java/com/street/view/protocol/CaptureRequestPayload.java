@@ -10,6 +10,9 @@ public record CaptureRequestPayload(
     String snapshotId,
     String nodeId,
     String dimension,
+    int blockX,
+    int blockY,
+    int blockZ,
     float x,
     float y,
     float z,
@@ -34,6 +37,9 @@ public record CaptureRequestPayload(
             buffer.readUtf(),
             buffer.readUtf(),
             buffer.readUtf(),
+            buffer.readInt(),
+            buffer.readInt(),
+            buffer.readInt(),
             buffer.readFloat(),
             buffer.readFloat(),
             buffer.readFloat(),
@@ -51,6 +57,9 @@ public record CaptureRequestPayload(
         buffer.writeUtf(payload.snapshotId);
         buffer.writeUtf(payload.nodeId);
         buffer.writeUtf(payload.dimension);
+        buffer.writeInt(payload.blockX);
+        buffer.writeInt(payload.blockY);
+        buffer.writeInt(payload.blockZ);
         buffer.writeFloat(payload.x);
         buffer.writeFloat(payload.y);
         buffer.writeFloat(payload.z);

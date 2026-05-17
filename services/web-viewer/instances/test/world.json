@@ -1,0 +1,8 @@
+{
+  "id": "test",
+  "name": "Test",
+  "description": "Sample Street View world bundled with the web viewer.",
+  "serverAddress": "sample.local",
+  "registeredAt": "2026-05-16T00:00:00.000Z",
+  "mapOutputDir": "streetview-map"
+}

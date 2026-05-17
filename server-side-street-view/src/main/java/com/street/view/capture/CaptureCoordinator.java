@@ -61,6 +61,7 @@ public final class CaptureCoordinator {
 
         ServerLevel world = player.level();
         int centerBlockX = (int) Math.floor(player.getX());
+        int centerBlockY = (int) Math.floor(player.getY());
         int centerBlockZ = (int) Math.floor(player.getZ());
         Path outputRoot = Path.of(MapExportConfig.OUTPUT_DIR_NAME);
 
@@ -74,7 +75,7 @@ public final class CaptureCoordinator {
                 blockPixelSize
             );
             String captureId = UUID.randomUUID().toString();
-            String nodeId = cleanNodeId("node_" + centerBlockX + "_" + Math.floor(player.getY()) + "_" + centerBlockZ);
+            String nodeId = cleanNodeId("node_" + centerBlockX + "_" + centerBlockY + "_" + centerBlockZ);
             StreetViewSnapshotStore.CaptureSnapshot snapshot = new StreetViewSnapshotStore.CaptureSnapshot(
                 captureId,
                 export.snapshotId(),
@@ -85,6 +86,9 @@ public final class CaptureCoordinator {
                 (float) player.getX(),
                 (float) player.getEyeY(),
                 (float) player.getZ(),
+                centerBlockX,
+                centerBlockY,
+                centerBlockZ,
                 player.getYRot(),
                 player.getXRot()
             );
@@ -99,6 +103,9 @@ public final class CaptureCoordinator {
                 export.snapshotId(),
                 nodeId,
                 export.dimension(),
+                snapshot.blockX(),
+                snapshot.blockY(),
+                snapshot.blockZ(),
                 snapshot.x(),
                 snapshot.y(),
                 snapshot.z(),
